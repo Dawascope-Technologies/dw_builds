@@ -3,99 +3,124 @@ name: Duplicate Release to Another Repo
 on:
   push:
     branches:
-      - master  # Trigger on pushes to master
+      - master
 
 jobs:
   duplicate-release:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+      
+      - name: Generate GitHub App Token
+        id: get-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          installation_id: ${{ secrets.APP_INSTALLATION_ID }}
+      
       - name: Install dependencies
         run: sudo apt-get install -y jq curl
-
+        
       - name: Get latest release from source repository
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.get-token.outputs.token }}
         run: |
           # Define source repository
           SOURCE_REPO="Dawascope-Technologies/Desktop_POS_Server"
-          TARGET_REPO="Dawascope-Technologies/dw_builds"  # Change this to your target repo
-
-          # Fetch the latest release from the source repo
-          RELEASE=$(curl -s "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
-
+          TARGET_REPO="Dawascope-Technologies/dw_builds"
+          
+          # Fetch the latest release using the GitHub App token
+          RELEASE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
+          
           # Check if release exists
           if [ "$(echo $RELEASE | jq -r '.message')" == "Not Found" ] || [ "$RELEASE" == "null" ]; then
-            echo "No releases found for $SOURCE_REPO."
-            exit 1
+            echo "No releases found for $SOURCE_REPO, creating empty release..."
+            
+            # Generate a timestamp-based tag
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+            RELEASE_TAG="release_${TIMESTAMP}"
+            RELEASE_NAME="Auto Release ${TIMESTAMP}"
+            
+            # Create empty release data
+            echo "{\"tag_name\": \"$RELEASE_TAG\", \"name\": \"$RELEASE_NAME\"}" > release_data.json
+            exit 0
           fi
-
+          
+          # Save release data for later steps
+          echo $RELEASE > release_data.json
+          
           # Get release details
           RELEASE_TAG=$(echo $RELEASE | jq -r .tag_name)
           RELEASE_NAME=$(echo $RELEASE | jq -r .name)
-          RELEASE_URL=$(echo $RELEASE | jq -r .html_url)
-
+          
           # Log available assets for debugging
           echo "Available assets:"
-          echo $RELEASE | jq -r '.assets[] | .name'  # List asset names
-
-          # Fetch assets
+          echo $RELEASE | jq -r '.assets[] | .name'
+          
+          # Fetch assets with GitHub App token
           ASSET_URL=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .browser_download_url')
           ASSET_NAME=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .name')
-
+          
           if [ -n "$ASSET_URL" ]; then
             echo "Downloading $ASSET_NAME from $ASSET_URL"
-            curl -L -o "$ASSET_NAME" "$ASSET_URL"
+            curl -L -H "Authorization: Bearer $GH_TOKEN" -o "$ASSET_NAME" "$ASSET_URL"
           else
             echo "No .exe file found in the release."
-            exit 1
           fi
-
+      
       - name: Create release in target repository
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.get-token.outputs.token }}
         run: |
           # Define target repository
-          TARGET_REPO="Dawascope-Technologies/Target_Repo"  # Change this to your target repo
-
+          TARGET_REPO="Dawascope-Technologies/dw_builds"
+          
+          # Load release data
+          RELEASE_DATA=$(cat release_data.json)
+          RELEASE_TAG=$(echo $RELEASE_DATA | jq -r .tag_name)
+          RELEASE_NAME=$(echo $RELEASE_DATA | jq -r .name)
+          
           # Create a new release in the target repository
-          RESPONSE=$(curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
+          RESPONSE=$(curl -s -X POST -H "Authorization: Bearer $GH_TOKEN" \
             -d '{
               "tag_name": "'"$RELEASE_TAG"'",
               "name": "'"$RELEASE_NAME"'",
-              "body": "Duplicated release from '"$SOURCE_REPO"'",
+              "body": "Duplicated release from source repository",
               "draft": false,
               "prerelease": false
             }' \
             "https://api.github.com/repos/$TARGET_REPO/releases")
-
-          # Extract the release ID of the newly created release
-          RELEASE_ID=$(echo $RESPONSE | jq -r .id)
-
+          
+          # Extract the release ID and save it for the next step
+          echo $RESPONSE | jq -r .id > release_id.txt
+          
           # Check if the release was created successfully
-          if [ "$RELEASE_ID" == "null" ]; then
+          if [ "$(cat release_id.txt)" == "null" ]; then
             echo "Failed to create the release in the target repository."
             exit 1
           fi
-
+          
           echo "Release created successfully in the target repository."
-
+      
       - name: Upload assets to the target release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.get-token.outputs.token }}
         run: |
-          # Upload the downloaded asset to the target release
-          TARGET_REPO="Dawascope-Technologies/Target_Repo"  # Change this to your target repo
-          RELEASE_ID=$RELEASE_ID
-          ASSET_FILE="$ASSET_NAME"
-
-          # Upload the asset to the target release
-          curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary @"$ASSET_FILE" \
-            "https://uploads.github.com/repos/$TARGET_REPO/releases/$RELEASE_ID/assets?name=$(basename $ASSET_FILE)"
-
-          echo "Asset uploaded successfully to the target release."
+          TARGET_REPO="Dawascope-Technologies/dw_builds"
+          RELEASE_ID=$(cat release_id.txt)
+          
+          # Find any .exe files in the current directory
+          for ASSET_FILE in *.exe; do
+            if [ -f "$ASSET_FILE" ]; then
+              echo "Uploading $ASSET_FILE to release..."
+              curl -s -X POST -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary @"$ASSET_FILE" \
+                "https://uploads.github.com/repos/$TARGET_REPO/releases/$RELEASE_ID/assets?name=$(basename $ASSET_FILE)"
+              echo "Asset $ASSET_FILE uploaded successfully."
+            fi
+          done
