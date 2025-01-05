@@ -19,31 +19,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Define an array of repositories
-          REPOS=("Dawascope-Technologies/Desktop_POS_Server" "Dawascope-Technologies/Desktop_POS_Server")  # Add more repositories if needed
+          # Define the specific repository
+          REPO="Dawascope-Technologies/Desktop_POS_Server"
 
           # Initialize variables
-          FOUND_REPOS=()
+          FOUND_REPO=false  # Set to false initially
 
           # Initialize the summary file
           echo "# Latest Releases" > releases.md
-          
-          # Iterate over the repositories
-          for REPO in "${REPOS[@]}"; do
-            echo "Fetching latest release from $REPO"
+          echo "Fetching latest release from $REPO"
             
-            # Fetch release details using the GitHub API
-            RELEASE=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
+          # Fetch release details using the GitHub API
+          RELEASE=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
             
-            # Check for errors in the API response
-            if [ "$(echo $RELEASE | jq -r '.message')" == "Not Found" ] || [ "$RELEASE" == "null" ]; then
-              echo "No releases found for $REPO."
-              echo "## $REPO" >> releases.md
-              echo "- No releases found." >> releases.md
-              echo "" >> releases.md
-              continue
-            fi
-            
+          # Check for errors in the API response
+          if [ "$(echo $RELEASE | jq -r '.message')" == "Not Found" ] || [ "$RELEASE" == "null" ]; then
+            echo "No releases found for $REPO."
+            echo "## $REPO" >> releases.md
+            echo "- No releases found." >> releases.md
+            echo "" >> releases.md
+          else
             RELEASE_TAG=$(echo $RELEASE | jq -r .tag_name)
             RELEASE_NAME=$(echo $RELEASE | jq -r .name)
             RELEASE_URL=$(echo $RELEASE | jq -r .html_url)
@@ -62,8 +57,8 @@ jobs:
               curl -L -o "$ASSET_NAME" "$ASSET_URL"
               echo "Downloaded $ASSET_NAME successfully."
 
-              # Add to FOUND_REPOS list
-              FOUND_REPOS+=("$REPO")
+              # Mark the repository as found
+              FOUND_REPO=true
 
               # Move the .exe file to the repository root
               mv "$ASSET_NAME" ./
@@ -84,15 +79,14 @@ jobs:
               echo "- URL: $RELEASE_URL" >> releases.md
               echo "- No .exe file found in the release." >> releases.md
               echo "" >> releases.md
-              continue
             fi
-          done
+          fi
 
-          # Check if any repositories were found with .exe files and print the result
-          if [ ${#FOUND_REPOS[@]} -gt 0 ]; then
-            echo "true"  # Print true if any repositories were found with valid releases and .exe files
+          # Print whether the repository with .exe was found
+          if [ "$FOUND_REPO" = true ]; then
+            echo "true"  # Print true if an .exe file was found
           else
-            echo "false"  # Print false if no repositories were found with valid releases and .exe files
+            echo "false"  # Print false if no .exe file was found
           fi
 
           # Commit the changes
