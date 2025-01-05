@@ -7,7 +7,7 @@ on:
 jobs:
   fetch-releases:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,6 +30,16 @@ jobs:
             
             # Fetch release details
             RELEASE=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
+            
+            # Check if the API call returned valid JSON
+            if [ "$(echo $RELEASE | jq -r '.message')" == "Not Found" ]; then
+              echo "No releases found for $REPO."
+              echo "## $REPO" >> releases.md
+              echo "- No releases found." >> releases.md
+              echo "" >> releases.md
+              continue
+            fi
+            
             RELEASE_TAG=$(echo $RELEASE | jq -r .tag_name)
             RELEASE_NAME=$(echo $RELEASE | jq -r .name)
             RELEASE_URL=$(echo $RELEASE | jq -r .html_url)
@@ -39,13 +49,20 @@ jobs:
             ASSET_NAME=$(echo $ASSETS | jq -r .name)
             ASSET_URL=$(echo $ASSETS | jq -r .url)
 
-            # Download .exe file if available
+            # Check if any .exe file was found
             if [ -n "$ASSET_URL" ]; then
               echo "Downloading $ASSET_NAME from $ASSET_URL"
               curl -L -o "downloaded_executables/$ASSET_NAME" "$ASSET_URL"
               echo "Downloaded $ASSET_NAME successfully."
             else
               echo "No .exe file found for $REPO."
+              echo "## $REPO" >> releases.md
+              echo "- Version: $RELEASE_TAG" >> releases.md
+              echo "- Name: $RELEASE_NAME" >> releases.md
+              echo "- URL: $RELEASE_URL" >> releases.md
+              echo "- No .exe file found in the release." >> releases.md
+              echo "" >> releases.md
+              continue
             fi
 
             # Append details to summary file
@@ -53,17 +70,18 @@ jobs:
             echo "- Version: $RELEASE_TAG" >> releases.md
             echo "- Name: $RELEASE_NAME" >> releases.md
             echo "- URL: $RELEASE_URL" >> releases.md
-            if [ -n "$ASSET_NAME" ]; then
-              echo "- Downloaded File: $ASSET_NAME" >> releases.md
-            else
-              echo "- No .exe file found in the release." >> releases.md
-            fi
+            echo "- Downloaded File: $ASSET_NAME" >> releases.md
             echo "" >> releases.md
           done
 
           # Create a zip file for all downloaded executables
-          zip -r build.zip downloaded_executables/
-          echo "Zipped all executables into build.zip"
+          if [ "$(ls -A downloaded_executables)" ]; then
+            zip -r build.zip downloaded_executables/
+            echo "Zipped all executables into build.zip"
+          else
+            echo "No executables to zip."
+            exit 0
+          fi
 
       - name: Commit build.zip to repository
         env:
