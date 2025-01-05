@@ -7,7 +7,7 @@ on:
 jobs:
   fetch-releases:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -15,65 +15,89 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get install -y jq curl
 
-      - name: Get latest releases and download .exe files
+      - name: Get latest releases and commit executables
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # List of repositories to fetch releases for
-          REPOS=("Dawascope-Technologies/Desktop_POS_Server")  # Add more repositories as needed
+          # Define an array of repositories
+          REPOS=("Dawascope-Technologies/Desktop_POS_Server" "Dawascope-Technologies/Desktop_POS_Server")  # Add more repositories if needed
 
-          # Initialize summary file
+          # Initialize variables
+          FOUND_REPOS=()
+
+          # Initialize the summary file
           echo "# Latest Releases" > releases.md
-          mkdir -p downloaded_executables
 
-          # Iterate over each repository
+          # Iterate over the repositories
           for REPO in "${REPOS[@]}"; do
             echo "Fetching latest release from $REPO"
             
-            # Fetch release details
+            # Fetch release details using the GitHub API
             RELEASE=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
+            
+            # Check for errors in the API response
+            if [ "$(echo $RELEASE | jq -r '.message')" == "Not Found" ] || [ "$RELEASE" == "null" ]; then
+              echo "No releases found for $REPO."
+              echo "## $REPO" >> releases.md
+              echo "- No releases found." >> releases.md
+              echo "" >> releases.md
+              continue
+            fi
+            
             RELEASE_TAG=$(echo $RELEASE | jq -r .tag_name)
             RELEASE_NAME=$(echo $RELEASE | jq -r .name)
             RELEASE_URL=$(echo $RELEASE | jq -r .html_url)
 
-            # Fetch assets (look for .exe files)
-            ASSETS=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | {name: .name, url: .browser_download_url}')
-            ASSET_NAME=$(echo $ASSETS | jq -r .name)
-            ASSET_URL=$(echo $ASSETS | jq -r .url)
+            # Fetch assets and find the .exe file
+            ASSET_URL=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .browser_download_url')
+            ASSET_NAME=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .name')
 
-            # Download .exe file if available
+            # Check if an .exe file exists
             if [ -n "$ASSET_URL" ]; then
               echo "Downloading $ASSET_NAME from $ASSET_URL"
-              curl -L -o "downloaded_executables/$ASSET_NAME" "$ASSET_URL"
+              curl -L -o "$ASSET_NAME" "$ASSET_URL"
               echo "Downloaded $ASSET_NAME successfully."
+
+              # Add to FOUND_REPOS list
+              FOUND_REPOS+=("$REPO")
+
+              # Move the .exe file to the repository root
+              mv "$ASSET_NAME" ./
+              git add "$ASSET_NAME"
+
+              # Append details to the summary file
+              echo "## $REPO" >> releases.md
+              echo "- Version: $RELEASE_TAG" >> releases.md
+              echo "- Name: $RELEASE_NAME" >> releases.md
+              echo "- URL: $RELEASE_URL" >> releases.md
+              echo "- Downloaded File: $ASSET_NAME" >> releases.md
+              echo "" >> releases.md
             else
               echo "No .exe file found for $REPO."
-            fi
-
-            # Append details to summary file
-            echo "## $REPO" >> releases.md
-            echo "- Version: $RELEASE_TAG" >> releases.md
-            echo "- Name: $RELEASE_NAME" >> releases.md
-            echo "- URL: $RELEASE_URL" >> releases.md
-            if [ -n "$ASSET_NAME" ]; then
-              echo "- Downloaded File: $ASSET_NAME" >> releases.md
-            else
+              echo "## $REPO" >> releases.md
+              echo "- Version: $RELEASE_TAG" >> releases.md
+              echo "- Name: $RELEASE_NAME" >> releases.md
+              echo "- URL: $RELEASE_URL" >> releases.md
               echo "- No .exe file found in the release." >> releases.md
+              echo "" >> releases.md
+              continue
             fi
-            echo "" >> releases.md
           done
 
-          # Display summary in workflow
-          cat releases.md
+          # Print found repositories
+          if [ ${#FOUND_REPOS[@]} -gt 0 ]; then
+            echo "Repositories with valid releases and .exe files found:"
+            for REPO in "${FOUND_REPOS[@]}"; do
+              echo "- $REPO"
+            done
+          else
+            echo "No repositories with valid releases or .exe files were found."
+          fi
 
-      - name: Upload summary and executables as artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: release-summary
-          path: releases.md
-          retention-days: 30
-
-      - name: Upload executables as artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: executables
-          path: downloaded_executables/
-          retention-days: 30
+          # Commit the changes
+          echo "Committing downloaded files and releases summary."
+          git add releases.md
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git commit -m "Add downloaded .exe files and releases summary [skip ci]"
+          git push
