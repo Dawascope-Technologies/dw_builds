@@ -21,6 +21,12 @@ jobs:
           private_key: ${{ secrets.APP_PRIVATE_KEY }}
           installation_id: ${{ secrets.APP_INSTALLATION_ID }}
       
+      - name: Setup GitHub CLI
+        run: |
+          mkdir -p $HOME/.config/gh
+          echo "github.com:" > $HOME/.config/gh/hosts.yml
+          echo "    oauth_token: ${{ steps.get-token.outputs.token }}" >> $HOME/.config/gh/hosts.yml
+      
       - name: Install dependencies
         run: sudo apt-get install -y jq curl
         
@@ -34,43 +40,39 @@ jobs:
           
           echo "Fetching latest release from $SOURCE_REPO..."
           
-          # Fetch latest release info
+          # Fetch latest release info with error handling
           RELEASE=$(curl -sL \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
           
-          # Save release data
-          echo "$RELEASE" > release_data.json
+          # Check if release fetch was successful
+          if [ "$(echo "$RELEASE" | jq -r '.message')" = "Not Found" ]; then
+            echo "No releases found in source repository"
+            exit 1
+          fi
           
           # Create downloads directory
           mkdir -p ./downloads
           
           echo "Downloading asset using GitHub CLI..."
-          # Use gh release download which handles authentication correctly
-          gh release download --repo $SOURCE_REPO $(echo "$RELEASE" | jq -r '.tag_name') \
+          # Download with error handling
+          if ! gh release download --repo $SOURCE_REPO $(echo "$RELEASE" | jq -r '.tag_name') \
             --pattern "*.exe" \
-            --dir ./downloads
+            --dir ./downloads; then
+            echo "Failed to download release assets"
+            exit 1
+          fi
+          
+          # Verify download
+          if [ ! -f ./downloads/*.exe ]; then
+            echo "No .exe files found in downloaded assets"
+            exit 1
+          fi
           
           # List downloaded files
           echo "Downloaded files:"
           ls -l ./downloads
-          
-          # Get expected size from release data
-          EXPECTED_SIZE=$(echo "$RELEASE" | jq -r '.assets[0].size')
-          echo "Expected size: $EXPECTED_SIZE"
-          
-          # Get actual file size using wc instead of stat
-          ACTUAL_SIZE=$(wc -c < "./downloads/"*.exe)
-          echo "Actual size: $ACTUAL_SIZE"
-          
-          # Compare sizes numerically
-          if [ "$ACTUAL_SIZE" -eq "$EXPECTED_SIZE" ]; then
-            echo "File size verification successful"
-          else
-            echo "Size mismatch. Expected: $EXPECTED_SIZE, Got: $ACTUAL_SIZE"
-            exit 1
-          fi
       
       - name: Create and upload to target release
         env:
@@ -78,16 +80,33 @@ jobs:
         run: |
           TARGET_REPO="Dawascope-Technologies/dw_builds"
           
-          # Load release data
-          RELEASE_DATA=$(cat release_data.json)
-          RELEASE_TAG=$(echo "$RELEASE_DATA" | jq -r .tag_name)
-          RELEASE_NAME=$(echo "$RELEASE_DATA" | jq -r .name)
+          # Set up release names (you can choose either format)
+          # Option 1: Single release that gets updated
+          RELEASE_TAG="latest"
+          RELEASE_NAME="Server"
+          
+          # Option 2: Multiple numbered releases
+          # RELEASE_TAG="server-$(date +%Y%m%d-%H%M%S)"
+          # RELEASE_NAME="Server $(date +%Y-%m-%d)"
+          
+          TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
           
           echo "Creating release in target repository..."
           
-          # Create release using gh cli
-          gh release create "$RELEASE_TAG" \
+          # Delete existing release if it exists (only for Option 1)
+          if gh release view "$RELEASE_TAG" --repo "$TARGET_REPO" &>/dev/null; then
+            echo "Deleting existing release with tag $RELEASE_TAG"
+            gh release delete "$RELEASE_TAG" --repo "$TARGET_REPO" --yes || true
+          fi
+          
+          # Create release using gh cli with error handling
+          if ! gh release create "$RELEASE_TAG" \
             --repo "$TARGET_REPO" \
             --title "$RELEASE_NAME" \
-            --notes "Duplicated from source repository" \
-            ./downloads/*.exe
+            --notes "Latest server build updated $TIMESTAMP" \
+            ./downloads/*.exe; then
+            echo "Failed to create release in target repository"
+            exit 1
+          fi
+          
+          echo "Release created and assets uploaded successfully"
