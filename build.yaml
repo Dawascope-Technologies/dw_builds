@@ -1,0 +1,43 @@
+name: Fetch Latest Releases
+
+on:
+  push:
+    branches:
+      - master  # Trigger on pushes to master
+jobs:
+  fetch-releases:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest releases
+        run: |
+          # First repository
+          REPO1="Dawascope-Technologies/dw_builds"  # Replace with your first repository
+          echo "Fetching latest release from $REPO1"
+          RELEASE1=$(curl -s "https://api.github.com/repos/$REPO1/releases/latest")
+          RELEASE1_TAG=$(echo $RELEASE1 | jq -r .tag_name)
+          RELEASE1_NAME=$(echo $RELEASE1 | jq -r .name)
+          RELEASE1_URL=$(echo $RELEASE1 | jq -r .html_url)
+          
+ 
+          # Create summary file
+          echo "# Latest Releases" > releases.md
+          echo "## $REPO1" >> releases.md
+          echo "- Version: $RELEASE1_TAG" >> releases.md
+          echo "- Name: $RELEASE1_NAME" >> releases.md
+          echo "- URL: $RELEASE1_URL" >> releases.md
+          echo "" >> releases.md
+
+          
+          # Display summary in workflow
+          cat releases.md
+
+      - name: Upload summary as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-summary
+          path: releases.md
+          retention-days: 30
