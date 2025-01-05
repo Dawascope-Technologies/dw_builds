@@ -26,9 +26,11 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.get-token.outputs.token }}
         run: |
-          # Define source repository
+          # Define repositories
           SOURCE_REPO="Dawascope-Technologies/Desktop_POS_Server"
           TARGET_REPO="Dawascope-Technologies/dw_builds"
+          
+          echo "Fetching latest release from $SOURCE_REPO..."
           
           # Fetch the latest release using the GitHub App token
           RELEASE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
@@ -38,43 +40,70 @@ jobs:
           if [ "$(echo $RELEASE | jq -r '.message')" == "Not Found" ] || [ "$RELEASE" == "null" ]; then
             echo "No releases found for $SOURCE_REPO, creating empty release..."
             
-            # Generate a timestamp-based tag
             TIMESTAMP=$(date +%Y%m%d_%H%M%S)
             RELEASE_TAG="release_${TIMESTAMP}"
             RELEASE_NAME="Auto Release ${TIMESTAMP}"
             
-            # Create empty release data
             echo "{\"tag_name\": \"$RELEASE_TAG\", \"name\": \"$RELEASE_NAME\"}" > release_data.json
             exit 0
           fi
           
-          # Save release data for later steps
+          # Save release data
           echo $RELEASE > release_data.json
           
           # Get release details
           RELEASE_TAG=$(echo $RELEASE | jq -r .tag_name)
           RELEASE_NAME=$(echo $RELEASE | jq -r .name)
           
-          # Log available assets for debugging
+          echo "Found release: $RELEASE_NAME (tag: $RELEASE_TAG)"
+          
+          # Log available assets
           echo "Available assets:"
-          echo $RELEASE | jq -r '.assets[] | .name'
+          echo $RELEASE | jq -r '.assets[] | "\(.name) - \(.size) bytes"'
           
           # Fetch assets with GitHub App token
-          ASSET_URL=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .browser_download_url')
-          ASSET_NAME=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .name')
+          ASSET_URLS=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .browser_download_url')
           
-          if [ -n "$ASSET_URL" ]; then
-            echo "Downloading $ASSET_NAME from $ASSET_URL"
-            curl -L -H "Authorization: Bearer $GH_TOKEN" -o "$ASSET_NAME" "$ASSET_URL"
-          else
-            echo "No .exe file found in the release."
+          if [ -z "$ASSET_URLS" ]; then
+            echo "No .exe files found in the release."
+            exit 1
           fi
+          
+          # Download each asset
+          echo "$ASSET_URLS" | while read -r ASSET_URL; do
+            ASSET_NAME=$(basename "$ASSET_URL")
+            echo "Downloading $ASSET_NAME from $ASSET_URL"
+            
+            # Download with progress and error checking
+            if curl -L -v \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/octet-stream" \
+              -o "$ASSET_NAME" \
+              "$ASSET_URL"; then
+              
+              # Verify file size
+              EXPECTED_SIZE=$(echo $RELEASE | jq -r ".assets[] | select(.browser_download_url == \"$ASSET_URL\") | .size")
+              ACTUAL_SIZE=$(stat -f %z "$ASSET_NAME" 2>/dev/null || stat -c %s "$ASSET_NAME")
+              
+              echo "Expected size: $EXPECTED_SIZE bytes"
+              echo "Actual size: $ACTUAL_SIZE bytes"
+              
+              if [ "$ACTUAL_SIZE" -ne "$EXPECTED_SIZE" ]; then
+                echo "Error: File size mismatch for $ASSET_NAME"
+                exit 1
+              fi
+              
+              echo "Successfully downloaded $ASSET_NAME"
+            else
+              echo "Error downloading $ASSET_NAME"
+              exit 1
+            fi
+          done
       
       - name: Create release in target repository
         env:
           GH_TOKEN: ${{ steps.get-token.outputs.token }}
         run: |
-          # Define target repository
           TARGET_REPO="Dawascope-Technologies/dw_builds"
           
           # Load release data
@@ -82,8 +111,12 @@ jobs:
           RELEASE_TAG=$(echo $RELEASE_DATA | jq -r .tag_name)
           RELEASE_NAME=$(echo $RELEASE_DATA | jq -r .name)
           
-          # Create a new release in the target repository
-          RESPONSE=$(curl -s -X POST -H "Authorization: Bearer $GH_TOKEN" \
+          echo "Creating release $RELEASE_NAME in $TARGET_REPO..."
+          
+          # Create release
+          RESPONSE=$(curl -v -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
             -d '{
               "tag_name": "'"$RELEASE_TAG"'",
               "name": "'"$RELEASE_NAME"'",
@@ -93,32 +126,49 @@ jobs:
             }' \
             "https://api.github.com/repos/$TARGET_REPO/releases")
           
-          # Extract the release ID and save it for the next step
+          # Save release ID and check for success
           echo $RESPONSE | jq -r .id > release_id.txt
           
-          # Check if the release was created successfully
           if [ "$(cat release_id.txt)" == "null" ]; then
-            echo "Failed to create the release in the target repository."
+            echo "Failed to create release. Response:"
+            echo $RESPONSE | jq '.'
             exit 1
           fi
           
-          echo "Release created successfully in the target repository."
+          echo "Release created successfully with ID: $(cat release_id.txt)"
       
-      - name: Upload assets to the target release
+      - name: Upload assets to target release
         env:
           GH_TOKEN: ${{ steps.get-token.outputs.token }}
         run: |
           TARGET_REPO="Dawascope-Technologies/dw_builds"
           RELEASE_ID=$(cat release_id.txt)
           
-          # Find any .exe files in the current directory
+          # Find and upload .exe files
           for ASSET_FILE in *.exe; do
             if [ -f "$ASSET_FILE" ]; then
               echo "Uploading $ASSET_FILE to release..."
-              curl -s -X POST -H "Authorization: Bearer $GH_TOKEN" \
+              
+              # Get local file size
+              LOCAL_SIZE=$(stat -f %z "$ASSET_FILE" 2>/dev/null || stat -c %s "$ASSET_FILE")
+              echo "Local file size: $LOCAL_SIZE bytes"
+              
+              # Upload with verbose output and proper headers
+              UPLOAD_RESPONSE=$(curl -v -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
                 -H "Content-Type: application/octet-stream" \
+                -H "Content-Length: $LOCAL_SIZE" \
                 --data-binary @"$ASSET_FILE" \
-                "https://uploads.github.com/repos/$TARGET_REPO/releases/$RELEASE_ID/assets?name=$(basename $ASSET_FILE)"
-              echo "Asset $ASSET_FILE uploaded successfully."
+                "https://uploads.github.com/repos/$TARGET_REPO/releases/$RELEASE_ID/assets?name=$(basename $ASSET_FILE)")
+              
+              # Verify upload
+              UPLOADED_SIZE=$(echo $UPLOAD_RESPONSE | jq -r '.size')
+              if [ "$UPLOADED_SIZE" != "null" ] && [ "$UPLOADED_SIZE" -eq "$LOCAL_SIZE" ]; then
+                echo "Successfully uploaded $ASSET_FILE (size: $UPLOADED_SIZE bytes)"
+              else
+                echo "Error uploading $ASSET_FILE. Response:"
+                echo $UPLOAD_RESPONSE | jq '.'
+                exit 1
+              fi
             fi
           done
