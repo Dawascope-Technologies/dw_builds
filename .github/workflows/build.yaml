@@ -18,7 +18,7 @@ jobs:
       - name: Get latest releases and download .exe files
         run: |
           # List of repositories to fetch releases for
-          REPOS=("owner1/repo1" "owner2/repo2" "owner3/repo3")  # Add more repositories as needed
+          REPOS=("Dawascope-Technologies/Desktop_POS_Server")  # Add more repositories as needed
 
           # Initialize summary file
           echo "# Latest Releases" > releases.md
