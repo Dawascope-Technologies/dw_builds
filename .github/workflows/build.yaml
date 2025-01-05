@@ -1,11 +1,12 @@
-name: Fetch Latest Releases
+name: Duplicate Release to Another Repo
 
 on:
   push:
     branches:
       - master  # Trigger on pushes to master
+
 jobs:
-  fetch-releases:
+  duplicate-release:
     runs-on: ubuntu-latest
 
     steps:
@@ -15,84 +16,86 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get install -y jq curl
 
-      - name: Get latest releases and commit executables
+      - name: Get latest release from source repository
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Define the specific repository
-          REPO="Dawascope-Technologies/Desktop_POS_Server"
+          # Define source repository
+          SOURCE_REPO="Dawascope-Technologies/Desktop_POS_Server"
+          TARGET_REPO="Dawascope-Technologies/dw_builds"  # Change this to your target repo
 
-          # Initialize variables
-          FOUND_REPO=false  # Set to false initially
+          # Fetch the latest release from the source repo
+          RELEASE=$(curl -s "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
 
-          # Initialize the summary file
-          echo "# Latest Releases" > releases.md
-          echo "Fetching latest release from $REPO"
-            
-          # Fetch release details using the GitHub API
-          RELEASE=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
-            
-          # Check for errors in the API response
+          # Check if release exists
           if [ "$(echo $RELEASE | jq -r '.message')" == "Not Found" ] || [ "$RELEASE" == "null" ]; then
-            echo "No releases found for $REPO."
-            echo "## $REPO" >> releases.md
-            echo "- No releases found." >> releases.md
-            echo "" >> releases.md
-          else
-            RELEASE_TAG=$(echo $RELEASE | jq -r .tag_name)
-            RELEASE_NAME=$(echo $RELEASE | jq -r .name)
-            RELEASE_URL=$(echo $RELEASE | jq -r .html_url)
-
-            # Log all assets to see what is available
-            echo "Available assets:"
-            echo $RELEASE | jq -r '.assets[] | .name'  # List all asset names
-
-            # Fetch assets and find the .exe file
-            ASSET_URL=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .browser_download_url')
-            ASSET_NAME=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .name')
-
-            # Check if an .exe file exists
-            if [ -n "$ASSET_URL" ]; then
-              echo "Downloading $ASSET_NAME from $ASSET_URL"
-              curl -L -o "$ASSET_NAME" "$ASSET_URL"
-              echo "Downloaded $ASSET_NAME successfully."
-
-              # Mark the repository as found
-              FOUND_REPO=true
-
-              # Move the .exe file to the repository root
-              mv "$ASSET_NAME" ./
-              git add "$ASSET_NAME"
-
-              # Append details to the summary file
-              echo "## $REPO" >> releases.md
-              echo "- Version: $RELEASE_TAG" >> releases.md
-              echo "- Name: $RELEASE_NAME" >> releases.md
-              echo "- URL: $RELEASE_URL" >> releases.md
-              echo "- Downloaded File: $ASSET_NAME" >> releases.md
-              echo "" >> releases.md
-            else
-              echo "No .exe file found for $REPO."
-              echo "## $REPO" >> releases.md
-              echo "- Version: $RELEASE_TAG" >> releases.md
-              echo "- Name: $RELEASE_NAME" >> releases.md
-              echo "- URL: $RELEASE_URL" >> releases.md
-              echo "- No .exe file found in the release." >> releases.md
-              echo "" >> releases.md
-            fi
+            echo "No releases found for $SOURCE_REPO."
+            exit 1
           fi
 
-          # Print whether the repository with .exe was found
-          if [ "$FOUND_REPO" = true ]; then
-            echo "true"  # Print true if an .exe file was found
+          # Get release details
+          RELEASE_TAG=$(echo $RELEASE | jq -r .tag_name)
+          RELEASE_NAME=$(echo $RELEASE | jq -r .name)
+          RELEASE_URL=$(echo $RELEASE | jq -r .html_url)
+
+          # Log available assets for debugging
+          echo "Available assets:"
+          echo $RELEASE | jq -r '.assets[] | .name'  # List asset names
+
+          # Fetch assets
+          ASSET_URL=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .browser_download_url')
+          ASSET_NAME=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .name')
+
+          if [ -n "$ASSET_URL" ]; then
+            echo "Downloading $ASSET_NAME from $ASSET_URL"
+            curl -L -o "$ASSET_NAME" "$ASSET_URL"
           else
-            echo "false"  # Print false if no .exe file was found
+            echo "No .exe file found in the release."
+            exit 1
           fi
 
-          # Commit the changes
-          echo "Committing downloaded files and releases summary."
-          git add releases.md
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git commit -m "Add downloaded .exe files and releases summary [skip ci]"
-          git push
+      - name: Create release in target repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Define target repository
+          TARGET_REPO="Dawascope-Technologies/Target_Repo"  # Change this to your target repo
+
+          # Create a new release in the target repository
+          RESPONSE=$(curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
+            -d '{
+              "tag_name": "'"$RELEASE_TAG"'",
+              "name": "'"$RELEASE_NAME"'",
+              "body": "Duplicated release from '"$SOURCE_REPO"'",
+              "draft": false,
+              "prerelease": false
+            }' \
+            "https://api.github.com/repos/$TARGET_REPO/releases")
+
+          # Extract the release ID of the newly created release
+          RELEASE_ID=$(echo $RESPONSE | jq -r .id)
+
+          # Check if the release was created successfully
+          if [ "$RELEASE_ID" == "null" ]; then
+            echo "Failed to create the release in the target repository."
+            exit 1
+          fi
+
+          echo "Release created successfully in the target repository."
+
+      - name: Upload assets to the target release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Upload the downloaded asset to the target release
+          TARGET_REPO="Dawascope-Technologies/Target_Repo"  # Change this to your target repo
+          RELEASE_ID=$RELEASE_ID
+          ASSET_FILE="$ASSET_NAME"
+
+          # Upload the asset to the target release
+          curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @"$ASSET_FILE" \
+            "https://uploads.github.com/repos/$TARGET_REPO/releases/$RELEASE_ID/assets?name=$(basename $ASSET_FILE)"
+
+          echo "Asset uploaded successfully to the target release."
