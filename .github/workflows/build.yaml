@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get install -y jq curl
         
-      - name: Get latest release from source repository
+      - name: Get latest release and download assets
         env:
           GH_TOKEN: ${{ steps.get-token.outputs.token }}
         run: |
@@ -32,114 +32,56 @@ jobs:
           SOURCE_REPO="Dawascope-Technologies/Desktop_POS_Server"
           TARGET_REPO="Dawascope-Technologies/dw_builds"
           
-          echo "Using token (first 10 chars): ${GH_TOKEN:0:10}..."
-          
           echo "Fetching latest release from $SOURCE_REPO..."
           
-          # Debug: Check API access
-          echo "Testing API access..."
-          TEST_RESPONSE=$(curl -i -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$SOURCE_REPO")
-          echo "API test response headers:"
-          echo "$TEST_RESPONSE" | grep "^HTTP\|^Rate-Limit\|^X-OAuth-Scopes"
-          
-          # Fetch the latest release
-          echo "Fetching release info..."
-          RELEASE_RESPONSE=$(curl -i -H "Authorization: Bearer $GH_TOKEN" \
+          # Fetch latest release info
+          RELEASE=$(curl -sL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
           
-          echo "Release API response headers:"
-          echo "$RELEASE_RESPONSE" | grep "^HTTP\|^Rate-Limit\|^X-OAuth-Scopes"
-          
-          # Extract JSON body from response (skip headers)
-          RELEASE=$(echo "$RELEASE_RESPONSE" | awk 'BEGIN{RS="\r\n\r\n"} NR==2')
-          
-          # Debug: Print release info
-          echo "Release JSON:"
-          echo "$RELEASE" | jq '.'
-          
-          # Check if release exists
-          if [ "$(echo $RELEASE | jq -r '.message')" == "Not Found" ] || [ "$RELEASE" == "null" ]; then
-            echo "No releases found for $SOURCE_REPO"
-            exit 1
-          fi
-          
           # Save release data
-          echo $RELEASE > release_data.json
+          echo "$RELEASE" > release_data.json
           
-          # Get and validate release details
-          RELEASE_TAG=$(echo $RELEASE | jq -r .tag_name)
-          RELEASE_NAME=$(echo $RELEASE | jq -r .name)
+          # Get asset download details
+          ASSET_URL=$(echo "$RELEASE" | jq -r '.assets[0].url')
           
-          echo "Found release: $RELEASE_NAME (tag: $RELEASE_TAG)"
+          echo "Downloading asset using GitHub CLI..."
+          # Use gh release download which handles authentication correctly
+          gh release download --repo $SOURCE_REPO $(echo "$RELEASE" | jq -r '.tag_name') \
+            --pattern "*.exe" \
+            --dir ./downloads
           
-          # Debug: Print all assets information
-          echo "Full assets information:"
-          echo $RELEASE | jq -r '.assets[]'
+          # Verify download
+          ls -l ./downloads
           
-          # Get asset details
-          ASSET_INFO=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe"))')
+          # Check downloaded file size
+          EXPECTED_SIZE=$(echo "$RELEASE" | jq -r '.assets[0].size')
+          ACTUAL_SIZE=$(stat -f %z ./downloads/*.exe 2>/dev/null || stat -c %s ./downloads/*.exe)
+          echo "Expected size: $EXPECTED_SIZE"
+          echo "Actual size: $ACTUAL_SIZE"
           
-          if [ -z "$ASSET_INFO" ]; then
-            echo "No .exe files found in the release."
+          if [ "$ACTUAL_SIZE" != "$EXPECTED_SIZE" ]; then
+            echo "Size mismatch"
             exit 1
           fi
+      
+      - name: Create and upload to target release
+        env:
+          GH_TOKEN: ${{ steps.get-token.outputs.token }}
+        run: |
+          TARGET_REPO="Dawascope-Technologies/dw_builds"
           
-          echo "Asset info:"
-          echo "$ASSET_INFO" | jq '.'
+          # Load release data
+          RELEASE_DATA=$(cat release_data.json)
+          RELEASE_TAG=$(echo "$RELEASE_DATA" | jq -r .tag_name)
+          RELEASE_NAME=$(echo "$RELEASE_DATA" | jq -r .name)
           
-          # Extract asset URL and download URL
-          ASSET_URL=$(echo "$ASSET_INFO" | jq -r .url)
-          BROWSER_URL=$(echo "$ASSET_INFO" | jq -r .browser_download_url)
+          echo "Creating release in target repository..."
           
-          echo "Asset API URL: $ASSET_URL"
-          echo "Browser download URL: $BROWSER_URL"
-          
-          # First try to get the asset details
-          echo "Checking asset details..."
-          ASSET_DETAILS=$(curl -i -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/octet-stream" \
-            "$ASSET_URL")
-          
-          echo "Asset details response headers:"
-          echo "$ASSET_DETAILS" | grep "^HTTP\|^Location\|^Content-Length"
-          
-          # Download the asset with debug information
-          echo "Downloading asset..."
-          DOWNLOAD_RESPONSE=$(curl -i \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/octet-stream" \
-            -L \
-            -o asset_download.exe \
-            "$BROWSER_URL")
-          
-          echo "Download response headers:"
-          echo "$DOWNLOAD_RESPONSE" | grep "^HTTP\|^Content-Length"
-          
-          # Check downloaded file
-          echo "Downloaded file details:"
-          ls -l asset_download.exe
-          
-          echo "First 100 bytes of downloaded file (hex):"
-          hexdump -C asset_download.exe | head -n 5
-          
-          echo "File content if small:"
-          if [ $(stat -f %z asset_download.exe 2>/dev/null || stat -c %s asset_download.exe) -lt 1000 ]; then
-            cat asset_download.exe
-          fi
-          
-          # Verify file size
-          EXPECTED_SIZE=$(echo "$ASSET_INFO" | jq -r .size)
-          ACTUAL_SIZE=$(stat -f %z asset_download.exe 2>/dev/null || stat -c %s asset_download.exe)
-          
-          echo "Expected size: $EXPECTED_SIZE bytes"
-          echo "Actual size: $ACTUAL_SIZE bytes"
-          
-          if [ "$ACTUAL_SIZE" -ne "$EXPECTED_SIZE" ]; then
-            echo "Size mismatch - debugging information:"
-            echo "Token permissions:"
-            curl -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user | jq '.permissions'
-            echo "Rate limit status:"
-            curl -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/rate_limit
-            exit 1
-          fi
+          # Create release using gh cli
+          gh release create "$RELEASE_TAG" \
+            --repo "$TARGET_REPO" \
+            --title "$RELEASE_NAME" \
+            --notes "Duplicated from source repository" \
+            ./downloads/*.exe
