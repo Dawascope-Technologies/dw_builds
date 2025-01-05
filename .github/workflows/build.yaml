@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - master
+  workflow_dispatch:
+
 jobs:
   duplicate-release:
     runs-on: ubuntu-latest
@@ -33,7 +35,7 @@ jobs:
           echo "Fetching latest release from $SOURCE_REPO..."
           
           # Fetch the latest release using the GitHub App token
-          RELEASE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+          RELEASE=$(curl --http1.1 -s -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
           
           # Check if release exists
@@ -69,35 +71,55 @@ jobs:
             exit 1
           fi
           
-          # Download each asset
+          # Download each asset with retry logic
           echo "$ASSET_URLS" | while read -r ASSET_URL; do
             ASSET_NAME=$(basename "$ASSET_URL")
             echo "Downloading $ASSET_NAME from $ASSET_URL"
             
-            # Download with progress and error checking
-            if curl -L -v \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/octet-stream" \
-              -o "$ASSET_NAME" \
-              "$ASSET_URL"; then
+            # Retry loop
+            MAX_RETRIES=3
+            for ATTEMPT in $(seq 1 $MAX_RETRIES); do
+              echo "Download attempt $ATTEMPT of $MAX_RETRIES"
               
-              # Verify file size
-              EXPECTED_SIZE=$(echo $RELEASE | jq -r ".assets[] | select(.browser_download_url == \"$ASSET_URL\") | .size")
-              ACTUAL_SIZE=$(stat -f %z "$ASSET_NAME" 2>/dev/null || stat -c %s "$ASSET_NAME")
-              
-              echo "Expected size: $EXPECTED_SIZE bytes"
-              echo "Actual size: $ACTUAL_SIZE bytes"
-              
-              if [ "$ACTUAL_SIZE" -ne "$EXPECTED_SIZE" ]; then
-                echo "Error: File size mismatch for $ASSET_NAME"
-                exit 1
+              if curl --http1.1 \
+                --retry 3 \
+                --retry-delay 2 \
+                --max-time 600 \
+                --connect-timeout 30 \
+                -L \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/octet-stream" \
+                -o "$ASSET_NAME" \
+                "$ASSET_URL"; then
+                
+                # Verify file size
+                EXPECTED_SIZE=$(echo $RELEASE | jq -r ".assets[] | select(.browser_download_url == \"$ASSET_URL\") | .size")
+                ACTUAL_SIZE=$(stat -f %z "$ASSET_NAME" 2>/dev/null || stat -c %s "$ASSET_NAME")
+                
+                echo "Expected size: $EXPECTED_SIZE bytes"
+                echo "Actual size: $ACTUAL_SIZE bytes"
+                
+                if [ "$ACTUAL_SIZE" -eq "$EXPECTED_SIZE" ]; then
+                  echo "Successfully downloaded $ASSET_NAME"
+                  break
+                else
+                  echo "Size mismatch, retrying..."
+                  rm -f "$ASSET_NAME"
+                  if [ $ATTEMPT -eq $MAX_RETRIES ]; then
+                    echo "Failed all retry attempts"
+                    exit 1
+                  fi
+                  sleep 5
+                fi
+              else
+                echo "Download failed, retrying..."
+                if [ $ATTEMPT -eq $MAX_RETRIES ]; then
+                  echo "Failed all retry attempts"
+                  exit 1
+                fi
+                sleep 5
               fi
-              
-              echo "Successfully downloaded $ASSET_NAME"
-            else
-              echo "Error downloading $ASSET_NAME"
-              exit 1
-            fi
+            done
           done
       
       - name: Create release in target repository
@@ -113,29 +135,41 @@ jobs:
           
           echo "Creating release $RELEASE_NAME in $TARGET_REPO..."
           
-          # Create release
-          RESPONSE=$(curl -v -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "tag_name": "'"$RELEASE_TAG"'",
-              "name": "'"$RELEASE_NAME"'",
-              "body": "Duplicated release from source repository",
-              "draft": false,
-              "prerelease": false
-            }' \
-            "https://api.github.com/repos/$TARGET_REPO/releases")
-          
-          # Save release ID and check for success
-          echo $RESPONSE | jq -r .id > release_id.txt
-          
-          if [ "$(cat release_id.txt)" == "null" ]; then
-            echo "Failed to create release. Response:"
-            echo $RESPONSE | jq '.'
-            exit 1
-          fi
-          
-          echo "Release created successfully with ID: $(cat release_id.txt)"
+          # Create release with retry logic
+          MAX_RETRIES=3
+          for ATTEMPT in $(seq 1 $MAX_RETRIES); do
+            echo "Create release attempt $ATTEMPT of $MAX_RETRIES"
+            
+            RESPONSE=$(curl --http1.1 \
+              --retry 3 \
+              --retry-delay 2 \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "tag_name": "'"$RELEASE_TAG"'",
+                "name": "'"$RELEASE_NAME"'",
+                "body": "Duplicated release from source repository",
+                "draft": false,
+                "prerelease": false
+              }' \
+              "https://api.github.com/repos/$TARGET_REPO/releases")
+            
+            RELEASE_ID=$(echo $RESPONSE | jq -r .id)
+            if [ "$RELEASE_ID" != "null" ]; then
+              echo $RELEASE_ID > release_id.txt
+              echo "Release created successfully with ID: $RELEASE_ID"
+              break
+            else
+              echo "Failed to create release, retrying..."
+              if [ $ATTEMPT -eq $MAX_RETRIES ]; then
+                echo "Failed all retry attempts"
+                echo "Response: $RESPONSE"
+                exit 1
+              fi
+              sleep 5
+            fi
+          done
       
       - name: Upload assets to target release
         env:
@@ -144,31 +178,43 @@ jobs:
           TARGET_REPO="Dawascope-Technologies/dw_builds"
           RELEASE_ID=$(cat release_id.txt)
           
-          # Find and upload .exe files
+          # Find and upload .exe files with retry logic
           for ASSET_FILE in *.exe; do
             if [ -f "$ASSET_FILE" ]; then
               echo "Uploading $ASSET_FILE to release..."
               
-              # Get local file size
               LOCAL_SIZE=$(stat -f %z "$ASSET_FILE" 2>/dev/null || stat -c %s "$ASSET_FILE")
               echo "Local file size: $LOCAL_SIZE bytes"
               
-              # Upload with verbose output and proper headers
-              UPLOAD_RESPONSE=$(curl -v -X POST \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                -H "Content-Type: application/octet-stream" \
-                -H "Content-Length: $LOCAL_SIZE" \
-                --data-binary @"$ASSET_FILE" \
-                "https://uploads.github.com/repos/$TARGET_REPO/releases/$RELEASE_ID/assets?name=$(basename $ASSET_FILE)")
-              
-              # Verify upload
-              UPLOADED_SIZE=$(echo $UPLOAD_RESPONSE | jq -r '.size')
-              if [ "$UPLOADED_SIZE" != "null" ] && [ "$UPLOADED_SIZE" -eq "$LOCAL_SIZE" ]; then
-                echo "Successfully uploaded $ASSET_FILE (size: $UPLOADED_SIZE bytes)"
-              else
-                echo "Error uploading $ASSET_FILE. Response:"
-                echo $UPLOAD_RESPONSE | jq '.'
-                exit 1
-              fi
+              MAX_RETRIES=3
+              for ATTEMPT in $(seq 1 $MAX_RETRIES); do
+                echo "Upload attempt $ATTEMPT of $MAX_RETRIES"
+                
+                UPLOAD_RESPONSE=$(curl --http1.1 \
+                  --retry 3 \
+                  --retry-delay 2 \
+                  --max-time 600 \
+                  --connect-timeout 30 \
+                  -X POST \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Content-Type: application/octet-stream" \
+                  -H "Content-Length: $LOCAL_SIZE" \
+                  --data-binary @"$ASSET_FILE" \
+                  "https://uploads.github.com/repos/$TARGET_REPO/releases/$RELEASE_ID/assets?name=$(basename $ASSET_FILE)")
+                
+                UPLOADED_SIZE=$(echo $UPLOAD_RESPONSE | jq -r '.size')
+                if [ "$UPLOADED_SIZE" != "null" ] && [ "$UPLOADED_SIZE" -eq "$LOCAL_SIZE" ]; then
+                  echo "Successfully uploaded $ASSET_FILE (size: $UPLOADED_SIZE bytes)"
+                  break
+                else
+                  echo "Upload failed or size mismatch, retrying..."
+                  if [ $ATTEMPT -eq $MAX_RETRIES ]; then
+                    echo "Failed all retry attempts"
+                    echo "Response: $UPLOAD_RESPONSE"
+                    exit 1
+                  fi
+                  sleep 5
+                fi
+              done
             fi
           done
