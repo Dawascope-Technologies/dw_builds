@@ -27,7 +27,7 @@ jobs:
 
           # Initialize the summary file
           echo "# Latest Releases" > releases.md
-
+          
           # Iterate over the repositories
           for REPO in "${REPOS[@]}"; do
             echo "Fetching latest release from $REPO"
@@ -47,6 +47,10 @@ jobs:
             RELEASE_TAG=$(echo $RELEASE | jq -r .tag_name)
             RELEASE_NAME=$(echo $RELEASE | jq -r .name)
             RELEASE_URL=$(echo $RELEASE | jq -r .html_url)
+
+            # Log all assets to see what is available
+            echo "Available assets:"
+            echo $RELEASE | jq -r '.assets[] | .name'  # List all asset names
 
             # Fetch assets and find the .exe file
             ASSET_URL=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | .browser_download_url')
@@ -84,14 +88,11 @@ jobs:
             fi
           done
 
-          # Print found repositories
+          # Check if any repositories were found with .exe files and print the result
           if [ ${#FOUND_REPOS[@]} -gt 0 ]; then
-            echo "Repositories with valid releases and .exe files found:"
-            for REPO in "${FOUND_REPOS[@]}"; do
-              echo "- $REPO"
-            done
+            echo "true"  # Print true if any repositories were found with valid releases and .exe files
           else
-            echo "No repositories with valid releases or .exe files were found."
+            echo "false"  # Print false if no repositories were found with valid releases and .exe files
           fi
 
           # Commit the changes
