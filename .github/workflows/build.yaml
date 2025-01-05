@@ -12,32 +12,70 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Get latest releases
+      - name: Install dependencies
+        run: sudo apt-get install -y jq curl zip
+
+      - name: Get latest releases, download .exe files, and zip them
         run: |
-          # First repository
-          REPO1="Dawascope-Technologies/dw_builds"  # Replace with your first repository
-          echo "Fetching latest release from $REPO1"
-          RELEASE1=$(curl -s "https://api.github.com/repos/$REPO1/releases/latest")
-          RELEASE1_TAG=$(echo $RELEASE1 | jq -r .tag_name)
-          RELEASE1_NAME=$(echo $RELEASE1 | jq -r .name)
-          RELEASE1_URL=$(echo $RELEASE1 | jq -r .html_url)
-          
- 
-          # Create summary file
+          # List of repositories to fetch releases for
+          REPOS=("owner1/repo1" "owner2/repo2" "owner3/repo3")  # Add more repositories as needed
+
+          # Initialize summary file and directories
           echo "# Latest Releases" > releases.md
-          echo "## $REPO1" >> releases.md
-          echo "- Version: $RELEASE1_TAG" >> releases.md
-          echo "- Name: $RELEASE1_NAME" >> releases.md
-          echo "- URL: $RELEASE1_URL" >> releases.md
-          echo "" >> releases.md
+          mkdir -p downloaded_executables
 
-          
-          # Display summary in workflow
-          cat releases.md
+          # Iterate over each repository
+          for REPO in "${REPOS[@]}"; do
+            echo "Fetching latest release from $REPO"
+            
+            # Fetch release details
+            RELEASE=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
+            RELEASE_TAG=$(echo $RELEASE | jq -r .tag_name)
+            RELEASE_NAME=$(echo $RELEASE | jq -r .name)
+            RELEASE_URL=$(echo $RELEASE | jq -r .html_url)
 
-      - name: Upload summary as artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: release-summary
-          path: releases.md
-          retention-days: 30
+            # Fetch assets (look for .exe files)
+            ASSETS=$(echo $RELEASE | jq -r '.assets[] | select(.name | endswith(".exe")) | {name: .name, url: .browser_download_url}')
+            ASSET_NAME=$(echo $ASSETS | jq -r .name)
+            ASSET_URL=$(echo $ASSETS | jq -r .url)
+
+            # Download .exe file if available
+            if [ -n "$ASSET_URL" ]; then
+              echo "Downloading $ASSET_NAME from $ASSET_URL"
+              curl -L -o "downloaded_executables/$ASSET_NAME" "$ASSET_URL"
+              echo "Downloaded $ASSET_NAME successfully."
+            else
+              echo "No .exe file found for $REPO."
+            fi
+
+            # Append details to summary file
+            echo "## $REPO" >> releases.md
+            echo "- Version: $RELEASE_TAG" >> releases.md
+            echo "- Name: $RELEASE_NAME" >> releases.md
+            echo "- URL: $RELEASE_URL" >> releases.md
+            if [ -n "$ASSET_NAME" ]; then
+              echo "- Downloaded File: $ASSET_NAME" >> releases.md
+            else
+              echo "- No .exe file found in the release." >> releases.md
+            fi
+            echo "" >> releases.md
+          done
+
+          # Create a zip file for all downloaded executables
+          zip -r build.zip downloaded_executables/
+          echo "Zipped all executables into build.zip"
+
+      - name: Commit build.zip to repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+          # Move the zip file to the root of the repository
+          mv build.zip releases.md ./
+
+          # Add and commit build.zip and releases.md
+          git add build.zip releases.md
+          git commit -m "Add build.zip and releases summary [skip ci]"
+          git push
