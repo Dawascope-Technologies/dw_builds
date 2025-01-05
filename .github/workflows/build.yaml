@@ -21,10 +21,6 @@ jobs:
           private_key: ${{ secrets.APP_PRIVATE_KEY }}
           installation_id: ${{ secrets.APP_INSTALLATION_ID }}
       
-      - name: Setup GitHub CLI
-        run: |
-          echo "token=${{ steps.get-token.outputs.token }}" > $HOME/.config/gh/hosts.yml
-      
       - name: Install dependencies
         run: sudo apt-get install -y jq curl
         
@@ -38,35 +34,23 @@ jobs:
           
           echo "Fetching latest release from $SOURCE_REPO..."
           
-          # Fetch latest release info with error handling
+          # Fetch latest release info
           RELEASE=$(curl -sL \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
           
-          # Check if release fetch was successful
-          if [ "$(echo "$RELEASE" | jq -r '.message')" = "Not Found" ]; then
-            echo "No releases found in source repository"
-            exit 1
-          fi
+          # Save release data
+          echo "$RELEASE" > release_data.json
           
           # Create downloads directory
           mkdir -p ./downloads
           
           echo "Downloading asset using GitHub CLI..."
-          # Download with error handling
-          if ! gh release download --repo $SOURCE_REPO $(echo "$RELEASE" | jq -r '.tag_name') \
+          # Use gh release download which handles authentication correctly
+          gh release download --repo $SOURCE_REPO $(echo "$RELEASE" | jq -r '.tag_name') \
             --pattern "*.exe" \
-            --dir ./downloads; then
-            echo "Failed to download release assets"
-            exit 1
-          fi
-          
-          # Verify download
-          if [ ! -f ./downloads/*.exe ]; then
-            echo "No .exe files found in downloaded assets"
-            exit 1
-          fi
+            --dir ./downloads
           
           # List downloaded files
           echo "Downloaded files:"
@@ -76,13 +60,15 @@ jobs:
           EXPECTED_SIZE=$(echo "$RELEASE" | jq -r '.assets[0].size')
           echo "Expected size: $EXPECTED_SIZE"
           
-          # Get actual file size
-          ACTUAL_SIZE=$(wc -c < ./downloads/*.exe)
+          # Get actual file size using wc instead of stat
+          ACTUAL_SIZE=$(wc -c < "./downloads/"*.exe)
           echo "Actual size: $ACTUAL_SIZE"
           
-          # Compare sizes with tolerance for encoding differences
-          if [ "$((ACTUAL_SIZE - EXPECTED_SIZE)).*" -gt "1024" ]; then
-            echo "Size mismatch exceeds tolerance. Expected: $EXPECTED_SIZE, Got: $ACTUAL_SIZE"
+          # Compare sizes numerically
+          if [ "$ACTUAL_SIZE" -eq "$EXPECTED_SIZE" ]; then
+            echo "File size verification successful"
+          else
+            echo "Size mismatch. Expected: $EXPECTED_SIZE, Got: $ACTUAL_SIZE"
             exit 1
           fi
       
@@ -91,25 +77,17 @@ jobs:
           GH_TOKEN: ${{ steps.get-token.outputs.token }}
         run: |
           TARGET_REPO="Dawascope-Technologies/dw_builds"
-          FIXED_TAG="dw_server"
-          TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+          
+          # Load release data
+          RELEASE_DATA=$(cat release_data.json)
+          RELEASE_TAG=$(echo "$RELEASE_DATA" | jq -r .tag_name)
+          RELEASE_NAME=$(echo "$RELEASE_DATA" | jq -r .name)
           
           echo "Creating release in target repository..."
           
-          # Delete existing release if it exists
-          if gh release view "$FIXED_TAG" --repo "$TARGET_REPO" &>/dev/null; then
-            echo "Deleting existing release with tag $FIXED_TAG"
-            gh release delete "$FIXED_TAG" --repo "$TARGET_REPO" --yes || true
-          fi
-          
-          # Create release using gh cli with error handling
-          if ! gh release create "$FIXED_TAG" \
+          # Create release using gh cli
+          gh release create "$RELEASE_TAG" \
             --repo "$TARGET_REPO" \
-            --title "DW Server" \
-            --notes "Latest server build updated $TIMESTAMP" \
-            ./downloads/*.exe; then
-            echo "Failed to create release in target repository"
-            exit 1
-          fi
-          
-          echo "Release created and assets uploaded successfully"
+            --title "$RELEASE_NAME" \
+            --notes "Duplicated from source repository" \
+            ./downloads/*.exe
