@@ -64,7 +64,7 @@ jobs:
           
           # Create ZIP file with timestamp
           TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-          ZIP_NAME="dwscope_installer_${TIMESTAMP}.zip"
+          ZIP_NAME="dawascope.zip"
           
           cd downloads
           zip -r "../$ZIP_NAME" ./*
@@ -85,7 +85,7 @@ jobs:
           
           # Set up release tag and name
           RELEASE_TAG="latest"
-          RELEASE_NAME="Dwscope Installer Package"
+          RELEASE_NAME="Dawascope Installation Packages"
           
           TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
           
@@ -101,7 +101,7 @@ jobs:
           if ! gh release create "$RELEASE_TAG" \
             --repo "$TARGET_REPO" \
             --title "$RELEASE_NAME" \
-            --notes "Latest installer package updated $TIMESTAMP" \
+            --notes "Latest installer package updated on $TIMESTAMP" \
             "$ZIP_NAME"; then
             echo "Failed to create release in target repository"
             exit 1
