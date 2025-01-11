@@ -42,18 +42,20 @@ jobs:
           mkdir -p ./downloads/server
           mkdir -p ./downloads/client
           
-          # Download server assets
+          # Download server assets and store version
           echo "Fetching latest release from $SERVER_REPO..."
-          LATEST_SERVER_RELEASE=$(gh release view --repo $SERVER_REPO --json assets,tagName --jq '.tagName')
+          SERVER_VERSION=$(gh release view --repo $SERVER_REPO --json tagName --jq '.tagName')
+          echo "SERVER_VERSION=$SERVER_VERSION" >> $GITHUB_ENV
           
           if ! gh release download --repo $SERVER_REPO --pattern "*.exe" --dir ./downloads/server; then
             echo "Failed to download server release assets"
             exit 1
           fi
           
-          # Download client assets
+          # Download client assets and store version
           echo "Fetching latest release from $CLIENT_REPO..."
-          LATEST_CLIENT_RELEASE=$(gh release view --repo $CLIENT_REPO --json assets,tagName --jq '.tagName')
+          CLIENT_VERSION=$(gh release view --repo $CLIENT_REPO --json tagName --jq '.tagName')
+          echo "CLIENT_VERSION=$CLIENT_VERSION" >> $GITHUB_ENV
           
           if ! gh release download --repo $CLIENT_REPO --pattern "*.exe" --dir ./downloads/client; then
             echo "Failed to download client release assets"
@@ -66,8 +68,7 @@ jobs:
             exit 1
           fi
           
-          # Create ZIP file with timestamp
-          TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+          # Create ZIP file
           ZIP_NAME="dawascope.zip"
           
           cd downloads
@@ -107,8 +108,10 @@ jobs:
             --title "$RELEASE_NAME" \
             --draft=false \
             --prerelease=false \
-            --generate-notes=false \
-            --notes "Latest installer package updated on $TIMESTAMP GMT" \
+            --notes "Latest installer package updated on $TIMESTAMP GMT
+
+Server Version: ${{ env.SERVER_VERSION }}
+Client Version: ${{ env.CLIENT_VERSION }}" \
             "$ZIP_NAME"; then
             echo "Failed to create release in target repository"
             exit 1
