@@ -1,5 +1,4 @@
 name: Duplicate Release to Another Repo
-
 on:
   push:
     branches:
@@ -28,51 +27,55 @@ jobs:
           echo "    oauth_token: ${{ steps.get-token.outputs.token }}" >> $HOME/.config/gh/hosts.yml
       
       - name: Install dependencies
-        run: sudo apt-get install -y jq curl
+        run: sudo apt-get install -y jq curl zip
         
-      - name: Get latest release and download assets
+      - name: Get latest releases and download assets
         env:
           GH_TOKEN: ${{ steps.get-token.outputs.token }}
         run: |
           # Define repositories
-          SOURCE_REPO="Dawascope-Technologies/Desktop_POS_Server"
+          SERVER_REPO="Dawascope-Technologies/Desktop_POS_Server"
+          CLIENT_REPO="Dawascope-Technologies/client-installer"
           TARGET_REPO="Dawascope-Technologies/dw_builds"
           
-          echo "Fetching latest release from $SOURCE_REPO..."
+          # Create downloads directories
+          mkdir -p ./downloads/server
+          mkdir -p ./downloads/client
           
-          # Fetch latest release info with error handling
-          RELEASE=$(curl -sL \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/$SOURCE_REPO/releases/latest")
-          
-          # Check if release fetch was successful
-          if [ "$(echo "$RELEASE" | jq -r '.message')" = "Not Found" ]; then
-            echo "No releases found in source repository"
+          # Download server assets
+          echo "Fetching latest release from $SERVER_REPO..."
+          if ! gh release download --repo $SERVER_REPO --pattern "*.exe" --dir ./downloads/server; then
+            echo "Failed to download server release assets"
             exit 1
           fi
           
-          # Create downloads directory
-          mkdir -p ./downloads
-          
-          echo "Downloading asset using GitHub CLI..."
-          # Download with error handling
-          if ! gh release download --repo $SOURCE_REPO $(echo "$RELEASE" | jq -r '.tag_name') \
-            --pattern "*.exe" \
-            --dir ./downloads; then
-            echo "Failed to download release assets"
+          # Download client assets
+          echo "Fetching latest release from $CLIENT_REPO..."
+          if ! gh release download --repo $CLIENT_REPO --pattern "*.exe" --dir ./downloads/client; then
+            echo "Failed to download client release assets"
             exit 1
           fi
           
-          # Verify download
-          if [ ! -f ./downloads/*.exe ]; then
-            echo "No .exe files found in downloaded assets"
+          # Verify downloads
+          if [ ! "$(ls -A ./downloads/server)" ] || [ ! "$(ls -A ./downloads/client)" ]; then
+            echo "Missing downloaded assets"
             exit 1
           fi
           
-          # List downloaded files
-          echo "Downloaded files:"
-          ls -l ./downloads
+          # Create ZIP file with timestamp
+          TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+          ZIP_NAME="dwscope_installer_${TIMESTAMP}.zip"
+          
+          cd downloads
+          zip -r "../$ZIP_NAME" ./*
+          cd ..
+          
+          echo "Created ZIP file: $ZIP_NAME"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          
+          # List contents
+          echo "ZIP contents:"
+          unzip -l "$ZIP_NAME"
       
       - name: Create and upload to target release
         env:
@@ -80,33 +83,28 @@ jobs:
         run: |
           TARGET_REPO="Dawascope-Technologies/dw_builds"
           
-          # Set up release names (you can choose either format)
-          # Option 1: Single release that gets updated
+          # Set up release tag and name
           RELEASE_TAG="latest"
-          RELEASE_NAME="Server"
-          
-          # Option 2: Multiple numbered releases
-          # RELEASE_TAG="server-$(date +%Y%m%d-%H%M%S)"
-          # RELEASE_NAME="Server $(date +%Y-%m-%d)"
+          RELEASE_NAME="Dwscope Installer Package"
           
           TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
           
           echo "Creating release in target repository..."
           
-          # Delete existing release if it exists (only for Option 1)
+          # Delete existing release if it exists
           if gh release view "$RELEASE_TAG" --repo "$TARGET_REPO" &>/dev/null; then
             echo "Deleting existing release with tag $RELEASE_TAG"
             gh release delete "$RELEASE_TAG" --repo "$TARGET_REPO" --yes || true
           fi
           
-          # Create release using gh cli with error handling
+          # Create release with ZIP file
           if ! gh release create "$RELEASE_TAG" \
             --repo "$TARGET_REPO" \
             --title "$RELEASE_NAME" \
-            --notes "Latest server build updated $TIMESTAMP" \
-            ./downloads/*.exe; then
+            --notes "Latest installer package updated $TIMESTAMP" \
+            "$ZIP_NAME"; then
             echo "Failed to create release in target repository"
             exit 1
           fi
           
-          echo "Release created and assets uploaded successfully"
+          echo "Release created and ZIP uploaded successfully"
