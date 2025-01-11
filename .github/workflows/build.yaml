@@ -42,20 +42,18 @@ jobs:
           mkdir -p ./downloads/server
           mkdir -p ./downloads/client
           
-          # Download server assets and store version
+          # Download server assets
           echo "Fetching latest release from $SERVER_REPO..."
-          SERVER_VERSION=$(gh release view --repo $SERVER_REPO --json tagName --jq '.tagName')
-          echo "SERVER_VERSION=$SERVER_VERSION" >> $GITHUB_ENV
+          LATEST_SERVER_RELEASE=$(gh release view --repo $SERVER_REPO --json assets,tagName --jq '.tagName')
           
           if ! gh release download --repo $SERVER_REPO --pattern "*.exe" --dir ./downloads/server; then
             echo "Failed to download server release assets"
             exit 1
           fi
           
-          # Download client assets and store version
+          # Download client assets
           echo "Fetching latest release from $CLIENT_REPO..."
-          CLIENT_VERSION=$(gh release view --repo $CLIENT_REPO --json tagName --jq '.tagName')
-          echo "CLIENT_VERSION=$CLIENT_VERSION" >> $GITHUB_ENV
+          LATEST_CLIENT_RELEASE=$(gh release view --repo $CLIENT_REPO --json assets,tagName --jq '.tagName')
           
           if ! gh release download --repo $CLIENT_REPO --pattern "*.exe" --dir ./downloads/client; then
             echo "Failed to download client release assets"
@@ -68,7 +66,8 @@ jobs:
             exit 1
           fi
           
-          # Create ZIP file
+          # Create ZIP file with timestamp
+          TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
           ZIP_NAME="dawascope.zip"
           
           cd downloads
@@ -106,9 +105,7 @@ jobs:
           if ! gh release create "$RELEASE_TAG" \
             --repo "$TARGET_REPO" \
             --title "$RELEASE_NAME" \
-            --draft=false \
-            --prerelease=false \
-            --notes "Latest installer package updated on $TIMESTAMP GMT Server Version: ${{ env.SERVER_VERSION }} Client Version: ${{ env.CLIENT_VERSION }}" \ 
+            --notes "Latest installer package updated on $TIMESTAMP GMT" \
             "$ZIP_NAME"; then
             echo "Failed to create release in target repository"
             exit 1
