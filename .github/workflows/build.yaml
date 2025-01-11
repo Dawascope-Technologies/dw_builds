@@ -116,4 +116,4 @@ jobs:
             --generate-notes=false \
             "${{ env.zip_name }}"
           
-          echo "Release created and ZIP uploaded successfully"
+          echo "Release created and the dawascope.zip uploaded successfully"
