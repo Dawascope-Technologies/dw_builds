@@ -91,7 +91,7 @@ jobs:
           RELEASE_TAG="latest"
           RELEASE_NAME="Dawascope Installation Packages"
           
-          TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S" + "GMT")
+          TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
           
           echo "Creating release in target repository..."
           
@@ -108,7 +108,7 @@ jobs:
             --draft=false \
             --prerelease=false \
             --generate-notes=false \
-            --notes "Latest installer package updated on $TIMESTAMP" \
+            --notes "Latest installer package updated on $TIMESTAMP GMT" \
             "$ZIP_NAME"; then
             echo "Failed to create release in target repository"
             exit 1
