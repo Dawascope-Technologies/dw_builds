@@ -44,6 +44,8 @@ jobs:
           
           # Download server assets
           echo "Fetching latest release from $SERVER_REPO..."
+          LATEST_CLIENT_RELEASE=$(gh release view --repo $SERVER_REPO --json assets,tagName --jq '.tagName')
+          
           if ! gh release download --repo $SERVER_REPO --pattern "*.exe" --dir ./downloads/server; then
             echo "Failed to download server release assets"
             exit 1
@@ -51,6 +53,8 @@ jobs:
           
           # Download client assets
           echo "Fetching latest release from $CLIENT_REPO..."
+          LATEST_CLIENT_RELEASE=$(gh release view --repo $CLIENT_REPO --json assets,tagName --jq '.tagName')
+          
           if ! gh release download --repo $CLIENT_REPO --pattern "*.exe" --dir ./downloads/client; then
             echo "Failed to download client release assets"
             exit 1
