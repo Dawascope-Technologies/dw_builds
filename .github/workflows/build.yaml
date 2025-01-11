@@ -42,18 +42,20 @@ jobs:
           mkdir -p ./downloads/server
           mkdir -p ./downloads/client
           
-          # Download server assets
+          # Download server assets and get version
           echo "Fetching latest release from $SERVER_REPO..."
-          LATEST_SERVER_RELEASE=$(gh release view --repo $SERVER_REPO --json assets,tagName --jq '.tagName')
+          SERVER_VER=$(gh release view --repo $SERVER_REPO --json tagName --jq '.tagName')
+          echo "server_version=$SERVER_VER" >> $GITHUB_ENV
           
           if ! gh release download --repo $SERVER_REPO --pattern "*.exe" --dir ./downloads/server; then
             echo "Failed to download server release assets"
             exit 1
           fi
           
-          # Download client assets
+          # Download client assets and get version
           echo "Fetching latest release from $CLIENT_REPO..."
-          LATEST_CLIENT_RELEASE=$(gh release view --repo $CLIENT_REPO --json assets,tagName --jq '.tagName')
+          CLIENT_VER=$(gh release view --repo $CLIENT_REPO --json tagName --jq '.tagName')
+          echo "client_version=$CLIENT_VER" >> $GITHUB_ENV
           
           if ! gh release download --repo $CLIENT_REPO --pattern "*.exe" --dir ./downloads/client; then
             echo "Failed to download client release assets"
@@ -66,8 +68,7 @@ jobs:
             exit 1
           fi
           
-          # Create ZIP file with timestamp
-          TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+          # Create ZIP file
           ZIP_NAME="dawascope.zip"
           
           cd downloads
@@ -75,9 +76,9 @@ jobs:
           cd ..
           
           echo "Created ZIP file: $ZIP_NAME"
-          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          echo "zip_name=$ZIP_NAME" >> $GITHUB_ENV
           
-          # List contents
+          # List contents to verify
           echo "ZIP contents:"
           unzip -l "$ZIP_NAME"
       
@@ -93,6 +94,12 @@ jobs:
           
           TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
           
+          # Create notes with version info
+          NOTES="Latest installer package updated on $TIMESTAMP GMT
+          
+          Server Version: ${{ env.server_version }}
+          Client Version: ${{ env.client_version }}"
+          
           echo "Creating release in target repository..."
           
           # Delete existing release if it exists
@@ -101,14 +108,12 @@ jobs:
             gh release delete "$RELEASE_TAG" --repo "$TARGET_REPO" --yes || true
           fi
           
-          # Create release with ZIP file
-          if ! gh release create "$RELEASE_TAG" \
+          # Create release with only ZIP file as asset
+          gh release create "$RELEASE_TAG" \
             --repo "$TARGET_REPO" \
             --title "$RELEASE_NAME" \
-            --notes "Latest installer package updated on $TIMESTAMP GMT" \
-            "$ZIP_NAME"; then
-            echo "Failed to create release in target repository"
-            exit 1
-          fi
+            --notes "$NOTES" \
+            --generate-notes=false \
+            "${{ env.zip_name }}"
           
           echo "Release created and ZIP uploaded successfully"
